@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Help message
+usage() {
+    cat <<USAGE
+Usage: $(basename "$0") [OPTIONS] [FILE/DIR...]
+
+Compress MP4 video files for optimal web delivery using FFmpeg.
+
+Options:
+  -f, --file FILE         Path to a specific MP4 file to compress.
+  -d, --dir DIR           Path to a directory containing MP4 files to compress.
+  -o, --outdir DIR        Output directory to save compressed videos (created if it doesn't exist).
+                          Default: same directory as the input file(s).
+  -c, --crf VALUE         Constant Rate Factor (video quality, default: 30, lower=better quality/larger size).
+  -p, --preset PRESET     FFmpeg encoding preset (ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow). Default: slow.
+  -a, --audio-bitrate BR  Audio bitrate for AAC audio. Default: 64k.
+  -r, --recursive         Recursively process MP4 files when using --dir.
+  -h, --help              Show this help message and exit.
+
+Examples:
+  $(basename "$0") video.mp4
+  $(basename "$0") video.mp4 --outdir ./compressed
+  $(basename "$0") --dir ./videos --outdir ./compressed
+  $(basename "$0") --dir ./videos --recursive --crf 28 -o ./dist
+USAGE
+}
+
+# Default parameters
+CRF="30"
+PRESET="slow"
+AUDIO_BITRATE="64k"
+OUTDIR=""
+RECURSIVE=false
+
+INPUT_FILES=()
+INPUT_DIRS=()
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -f|--file)
+            if [[ -n "${2:-}" ]]; then
+                INPUT_FILES+=("$2")
+                shift 2
+            else
+                echo "Error: --file requires an argument." >&2
+                exit 1
+            fi
+            ;;
+        -d|--dir)
+            if [[ -n "${2:-}" ]]; then
+                INPUT_DIRS+=("$2")
+                shift 2
+            else
+                echo "Error: --dir requires an argument." >&2
+                exit 1
+            fi
+            ;;
+        -o|--outdir)
+            if [[ -n "${2:-}" ]]; then
+                OUTDIR="$2"
+                shift 2
+            else
+                echo "Error: --outdir requires an argument." >&2
+                exit 1
+            fi
+            ;;
+        -c|--crf)
+            if [[ -n "${2:-}" ]]; then
+                CRF="$2"
+                shift 2
+            else
+                echo "Error: --crf requires an argument." >&2
+                exit 1
+            fi
+            ;;
+        -p|--preset)
+            if [[ -n "${2:-}" ]]; then
+                PRESET="$2"
+                shift 2
+            else
+                echo "Error: --preset requires an argument." >&2
+                exit 1
+            fi
+            ;;
+        -a|--audio-bitrate)
+            if [[ -n "${2:-}" ]]; then
+                AUDIO_BITRATE="$2"
+                shift 2
+            else
+                echo "Error: --audio-bitrate requires an argument." >&2
+                exit 1
+            fi
+            ;;
+        -r|--recursive)
+            RECURSIVE=true
+            shift
+            ;;
+        --)
+            shift
+            while [[ $# -gt 0 ]]; do
+                INPUT_FILES+=("$1")
+                shift
+            done
+            break
+            ;;
+        -*)
+            echo "Error: Unknown option '$1'" >&2
+            usage
+            exit 1
+            ;;
+        *)
+            # Positional argument treated as file or directory
+            if [[ -d "$1" ]]; then
+                INPUT_DIRS+=("$1")
+            else
+                INPUT_FILES+=("$1")
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Check if ffmpeg is installed
+if ! command -v ffmpeg &>/dev/null; then
+    echo "Error: ffmpeg is not installed or not in PATH." >&2
+    exit 1
+fi
+
+# Ensure at least one input source was given
+if [[ ${#INPUT_FILES[@]} -eq 0 && ${#INPUT_DIRS[@]} -eq 0 ]]; then
+    echo "Error: No input files or directories specified." >&2
+    usage
+    exit 1
+fi
+
+# Ensure output directory exists if specified
+if [[ -n "$OUTDIR" ]]; then
+    mkdir -p "$OUTDIR"
+fi
+
+# Function to format bytes to human readable
+format_size() {
+    local bytes=$1
+    if [[ $bytes -ge 1073741824 ]]; then
+        echo "$(awk "BEGIN {printf \"%.2f GB\", $bytes/1073741824}")"
+    elif [[ $bytes -ge 1048576 ]]; then
+        echo "$(awk "BEGIN {printf \"%.2f MB\", $bytes/1048576}")"
+    elif [[ $bytes -ge 1024 ]]; then
+        echo "$(awk "BEGIN {printf \"%.2f KB\", $bytes/1024}")"
+    else
+        echo "${bytes} B"
+    fi
+}
+
+# Function to compress a single file
+compress_file() {
+    local input="$1"
+
+    if [[ ! -f "$input" ]]; then
+        echo "Warning: File not found: $input" >&2
+        return
+    fi
+
+    local filename
+    local dirname
+    local basename_no_ext
+    local target_dir
+    local output
+
+    filename="$(basename "$input")"
+    dirname="$(dirname "$input")"
+    basename_no_ext="${filename%.*}"
+
+    # Determine target output directory and filename
+    if [[ -n "$OUTDIR" ]]; then
+        target_dir="$OUTDIR"
+        output="$target_dir/${basename_no_ext}.mp4"
+        # If output path is the exact same as input, avoid overwriting directly
+        if [[ "$(realpath "$input")" == "$(realpath -m "$output")" ]]; then
+            output="$target_dir/${basename_no_ext}_compressed.mp4"
+        fi
+    else
+        target_dir="$dirname"
+        output="$target_dir/${basename_no_ext}_compressed.mp4"
+    fi
+
+    local orig_size
+    orig_size=$(stat -c%s "$input" 2>/dev/null || stat -f%z "$input" 2>/dev/null || echo 0)
+
+    echo "=================================================="
+    echo "Compressing: $input"
+    echo "Output:      $output"
+    echo "Settings:    CRF=$CRF | Preset=$PRESET | Audio=$AUDIO_BITRATE"
+    echo "=================================================="
+
+    ffmpeg -y -hide_banner -loglevel warning -stats \
+        -i "$input" \
+        -c:v libx264 \
+        -crf "$CRF" \
+        -preset "$PRESET" \
+        -pix_fmt yuv420p \
+        -movflags +faststart \
+        -c:a aac \
+        -b:a "$AUDIO_BITRATE" \
+        "$output"
+
+    local new_size
+    new_size=$(stat -c%s "$output" 2>/dev/null || stat -f%z "$output" 2>/dev/null || echo 0)
+
+    local reduction="0%"
+    if [[ $orig_size -gt 0 && $new_size -gt 0 ]]; then
+        reduction=$(awk "BEGIN {printf \"%.1f%%\", (1 - $new_size/$orig_size) * 100}")
+    fi
+
+    echo -e "\n✓ Done: $(format_size "$orig_size") -> $(format_size "$new_size") (Saved $reduction)\n"
+}
+
+# Process specific files
+for file in "${INPUT_FILES[@]}"; do
+    compress_file "$file"
+done
+
+# Process directories
+for dir in "${INPUT_DIRS[@]}"; do
+    if [[ ! -d "$dir" ]]; then
+        echo "Warning: Directory not found: $dir" >&2
+        continue
+    fi
+
+    if [[ "$RECURSIVE" == true ]]; then
+        while IFS= read -r -d '' vid; do
+            compress_file "$vid"
+        done < <(find "$dir" -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" \) -print0)
+    else
+        while IFS= read -r -d '' vid; do
+            compress_file "$vid"
+        done < <(find "$dir" -maxdepth 1 -type f \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.mkv" \) -print0)
+    fi
+done
+
+echo "All processing complete!"

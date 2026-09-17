@@ -1,0 +1,4 @@
+#!/bin/bash   
+
+# no comments!! i personally use it and it's descent in agentic tasks and the normal mode is kinda annoying
+agy --dangerously-skip-permissions

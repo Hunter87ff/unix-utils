@@ -1,0 +1,48 @@
+#!/bin/bash
+
+# this script is used to clear dependency folders in project directories. 
+# accepts depth such as -d 1 which will look for all the project directories in the current directory and clear their dependency folders.
+# accepts folder name such as -f node_modules which will clear the specified folder in the project directories.
+
+usage(){
+    echo "Usage: $0 [-d <depth>] [-f <folder>] [-h]";
+    echo "Example: $0 -d 3 -f node_modules"
+    echo "";
+    echo "This script clears dependency folders in project directories.";
+    echo "";
+    echo "Options:";
+    echo "  -d <depth>    Specify the depth to search for project directories.";
+    echo "  -f <folder>   Specify the folder name to clear (e.g., node_modules).";
+    echo "  -h            Display this help message.";
+    exit 0;
+}
+
+# Parse command-line options
+while getopts "d:f:h" opt; do
+  case $opt in
+    d) depth="$OPTARG" ;; 
+    f) folder="$OPTARG" ;; 
+    h) usage ;; 
+    *) usage ;; 
+  esac
+done
+
+# Check if help was requested but no options were provided
+if [ "$OPTIND" -eq 1 ] && [ -z "$depth" ] && [ -z "$folder" ]; then
+  usage
+fi
+
+# Check if both depth and folder are provided
+if [ -z "$depth" ] && [ -z "$folder" ]; then
+  echo "Error: Both -d and -f options are required."
+  usage
+fi
+
+if [ -z "$depth" ] || [ -z "$folder" ]; then
+  echo "Usage: $0 -d <depth> -f <folder>"
+  exit 1
+fi
+
+for ((i=1; i<=depth; i++)); do
+  find . -maxdepth $i -type d -name "$folder" -exec rm -rf {} +
+done
